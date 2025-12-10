@@ -5,7 +5,9 @@ const state = {
   videoInfo: null,
   currentVideoId: null,
   history: [],
+  screenshots: [],
   isOnYouTube: false,
+  isPlaying: false,
 };
 
 // ===== DOM Elements =====
@@ -32,6 +34,30 @@ const elements = {
   backFromHistory: document.getElementById('backFromHistory'),
   historyList: document.getElementById('historyList'),
   emptyHistory: document.getElementById('emptyHistory'),
+  
+  // Watch Next
+  watchNextPanel: document.getElementById('watchNextPanel'),
+  watchNextBtn: document.getElementById('watchNextBtn'),
+  backFromWatchNext: document.getElementById('backFromWatchNext'),
+  generateRecsBtn: document.getElementById('generateRecsBtn'),
+  watchNextInitial: document.getElementById('watchNextInitial'),
+  watchNextLoading: document.getElementById('watchNextLoading'),
+  watchNextResults: document.getElementById('watchNextResults'),
+  recsList: document.getElementById('recsList'),
+  
+  // Screenshots
+  screenshotsPanel: document.getElementById('screenshotsPanel'),
+  screenshotsBtn: document.getElementById('screenshotsBtn'),
+  backFromScreenshots: document.getElementById('backFromScreenshots'),
+  screenshotsList: document.getElementById('screenshotsList'),
+  emptyScreenshots: document.getElementById('emptyScreenshots'),
+  downloadAllBtn: document.getElementById('downloadAllBtn'),
+  screenshotBtn: document.getElementById('screenshotBtn'),
+  screenshotToast: document.getElementById('screenshotToast'),
+  playPauseBtn: document.getElementById('playPauseBtn'),
+  playIcon: document.getElementById('playIcon'),
+  pauseIcon: document.getElementById('pauseIcon'),
+  playPauseText: document.getElementById('playPauseText'),
   
   // Video Info
   videoThumbnail: document.getElementById('videoThumbnail'),
@@ -66,9 +92,10 @@ async function init() {
 }
 
 async function loadState() {
-  const stored = await chrome.storage.local.get(['apiKey', 'history']);
+  const stored = await chrome.storage.local.get(['apiKey', 'history', 'screenshots']);
   state.apiKey = stored.apiKey || null;
   state.history = stored.history || [];
+  state.screenshots = stored.screenshots || [];
 }
 
 // ===== Event Listeners =====
@@ -84,6 +111,18 @@ function setupEventListeners() {
   // History Panel
   elements.historyBtn.addEventListener('click', openHistory);
   elements.backFromHistory.addEventListener('click', closeHistory);
+  
+  // Watch Next Panel
+  elements.watchNextBtn.addEventListener('click', openWatchNext);
+  elements.backFromWatchNext.addEventListener('click', closeWatchNext);
+  elements.generateRecsBtn.addEventListener('click', generateRecommendations);
+  
+  // Screenshots Panel
+  elements.screenshotsBtn.addEventListener('click', openScreenshots);
+  elements.backFromScreenshots.addEventListener('click', closeScreenshots);
+  elements.downloadAllBtn.addEventListener('click', downloadAllScreenshots);
+  elements.screenshotBtn.addEventListener('click', takeScreenshot);
+  elements.playPauseBtn.addEventListener('click', togglePlayPause);
   
   // Transcript
   elements.loadTranscriptBtn.addEventListener('click', loadTranscript);
@@ -751,4 +790,378 @@ function formatDate(timestamp) {
   if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
   
   return date.toLocaleDateString();
+}
+
+// ===== Screenshot Functions =====
+async function takeScreenshot() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    
+    // Capture the video frame
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: captureVideoFrame
+    });
+    
+    if (results?.[0]?.result?.success) {
+      const screenshot = {
+        id: Date.now(),
+        dataUrl: results[0].result.dataUrl,
+        timestamp: results[0].result.timestamp,
+        videoId: state.currentVideoId,
+        videoTitle: state.videoInfo?.title || 'Unknown Video',
+        createdAt: Date.now()
+      };
+      
+      state.screenshots.push(screenshot);
+      
+      // Keep only last 100 screenshots to manage storage
+      if (state.screenshots.length > 100) {
+        state.screenshots = state.screenshots.slice(-100);
+      }
+      
+      await chrome.storage.local.set({ screenshots: state.screenshots });
+      
+      // Show success toast
+      showScreenshotToast();
+    } else {
+      console.error('Failed to capture screenshot:', results?.[0]?.result?.error);
+    }
+  } catch (error) {
+    console.error('Error taking screenshot:', error);
+  }
+}
+
+function captureVideoFrame() {
+  try {
+    const video = document.querySelector('video');
+    if (!video) {
+      return { success: false, error: 'No video found' };
+    }
+    
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    
+    const dataUrl = canvas.toDataURL('image/png');
+    const timestamp = video.currentTime;
+    
+    return { success: true, dataUrl, timestamp };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+}
+
+function showScreenshotToast() {
+  elements.screenshotToast.classList.remove('hidden');
+  setTimeout(() => {
+    elements.screenshotToast.classList.add('hidden');
+  }, 2000);
+}
+
+async function togglePlayPause() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    
+    const results = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: () => {
+        const video = document.querySelector('video');
+        if (video) {
+          if (video.paused) {
+            video.play();
+            return { isPlaying: true };
+          } else {
+            video.pause();
+            return { isPlaying: false };
+          }
+        }
+        return { isPlaying: false };
+      }
+    });
+    
+    if (results?.[0]?.result) {
+      state.isPlaying = results[0].result.isPlaying;
+      updatePlayPauseButton();
+    }
+  } catch (error) {
+    console.error('Error toggling play/pause:', error);
+  }
+}
+
+function updatePlayPauseButton() {
+  if (state.isPlaying) {
+    elements.playIcon.classList.add('hidden');
+    elements.pauseIcon.classList.remove('hidden');
+    elements.playPauseText.textContent = 'Pause';
+  } else {
+    elements.playIcon.classList.remove('hidden');
+    elements.pauseIcon.classList.add('hidden');
+    elements.playPauseText.textContent = 'Play';
+  }
+}
+
+// ===== Screenshots Panel =====
+function openScreenshots() {
+  elements.screenshotsPanel.classList.remove('hidden');
+  renderScreenshots();
+}
+
+function closeScreenshots() {
+  elements.screenshotsPanel.classList.add('hidden');
+}
+
+function renderScreenshots() {
+  // Filter screenshots for current video
+  const videoScreenshots = state.screenshots.filter(s => s.videoId === state.currentVideoId);
+  
+  if (videoScreenshots.length === 0) {
+    elements.screenshotsList.classList.add('hidden');
+    elements.emptyScreenshots.classList.remove('hidden');
+    return;
+  }
+  
+  elements.emptyScreenshots.classList.add('hidden');
+  elements.screenshotsList.classList.remove('hidden');
+  
+  elements.screenshotsList.innerHTML = videoScreenshots
+    .slice()
+    .reverse()
+    .map(screenshot => `
+      <div class="screenshot-item" data-id="${screenshot.id}">
+        <img src="${screenshot.dataUrl}" alt="Screenshot at ${formatTimestampShort(screenshot.timestamp)}">
+        <div class="screenshot-item-overlay">
+          <span class="screenshot-timestamp">${formatTimestampShort(screenshot.timestamp)}</span>
+          <div class="screenshot-actions">
+            <button class="screenshot-action-btn download" data-id="${screenshot.id}" title="Download">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7,10 12,15 17,10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+            </button>
+            <button class="screenshot-action-btn delete" data-id="${screenshot.id}" title="Delete">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3,6 5,6 21,6"/>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    `)
+    .join('');
+  
+  // Add event listeners
+  elements.screenshotsList.querySelectorAll('.screenshot-action-btn.download').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      downloadScreenshot(parseInt(btn.dataset.id));
+    });
+  });
+  
+  elements.screenshotsList.querySelectorAll('.screenshot-action-btn.delete').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteScreenshot(parseInt(btn.dataset.id));
+    });
+  });
+  
+  // Click on screenshot to seek video
+  elements.screenshotsList.querySelectorAll('.screenshot-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const screenshot = state.screenshots.find(s => s.id === parseInt(item.dataset.id));
+      if (screenshot) {
+        seekVideo(screenshot.timestamp);
+      }
+    });
+  });
+}
+
+function formatTimestampShort(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function downloadScreenshot(id) {
+  const screenshot = state.screenshots.find(s => s.id === id);
+  if (!screenshot) return;
+  
+  const link = document.createElement('a');
+  link.href = screenshot.dataUrl;
+  link.download = `screenshot_${formatTimestampShort(screenshot.timestamp).replace(':', '-')}.png`;
+  link.click();
+}
+
+async function deleteScreenshot(id) {
+  state.screenshots = state.screenshots.filter(s => s.id !== id);
+  await chrome.storage.local.set({ screenshots: state.screenshots });
+  renderScreenshots();
+}
+
+async function downloadAllScreenshots() {
+  const videoScreenshots = state.screenshots.filter(s => s.videoId === state.currentVideoId);
+  
+  for (const screenshot of videoScreenshots) {
+    const link = document.createElement('a');
+    link.href = screenshot.dataUrl;
+    link.download = `screenshot_${formatTimestampShort(screenshot.timestamp).replace(':', '-')}.png`;
+    link.click();
+    
+    // Small delay between downloads
+    await new Promise(r => setTimeout(r, 200));
+  }
+}
+
+// ===== Watch Next / Recommendations =====
+function openWatchNext() {
+  elements.watchNextPanel.classList.remove('hidden');
+  // Reset to initial state
+  elements.watchNextInitial.classList.remove('hidden');
+  elements.watchNextLoading.classList.add('hidden');
+  elements.watchNextResults.classList.add('hidden');
+}
+
+function closeWatchNext() {
+  elements.watchNextPanel.classList.add('hidden');
+}
+
+async function generateRecommendations() {
+  if (!state.apiKey) {
+    alert('Please add your API key first');
+    return;
+  }
+  
+  // Show loading
+  elements.watchNextInitial.classList.add('hidden');
+  elements.watchNextLoading.classList.remove('hidden');
+  elements.watchNextResults.classList.add('hidden');
+  
+  try {
+    const recommendations = await getAIRecommendations();
+    renderRecommendations(recommendations);
+    
+    // Show results
+    elements.watchNextLoading.classList.add('hidden');
+    elements.watchNextResults.classList.remove('hidden');
+  } catch (error) {
+    console.error('Error generating recommendations:', error);
+    elements.watchNextLoading.classList.add('hidden');
+    elements.watchNextInitial.classList.remove('hidden');
+    alert('Failed to generate recommendations: ' + error.message);
+  }
+}
+
+async function getAIRecommendations() {
+  // Get user's questions from history for this video
+  const videoQuestions = state.history
+    .filter(h => h.videoId === state.currentVideoId)
+    .map(h => h.question)
+    .slice(-10); // Last 10 questions
+  
+  // Get transcript summary (first 3000 chars)
+  let transcriptSummary = '';
+  if (state.transcript) {
+    transcriptSummary = state.transcript
+      .map(t => t.text)
+      .join(' ')
+      .slice(0, 3000);
+  }
+  
+  const prompt = `You are a learning path advisor. Based on the YouTube video content and the user's questions, suggest what they should learn or watch next.
+
+VIDEO TITLE: ${state.videoInfo?.title || 'Unknown'}
+
+VIDEO CONTENT SUMMARY:
+${transcriptSummary || 'No transcript available'}
+
+USER'S QUESTIONS ABOUT THIS VIDEO:
+${videoQuestions.length > 0 ? videoQuestions.map((q, i) => `${i + 1}. ${q}`).join('\n') : 'No questions asked yet'}
+
+Based on this context, suggest 4 recommendations for what the user should watch/learn next. Consider:
+1. Topics they showed interest in (from their questions)
+2. Natural next steps in learning this subject
+3. Related concepts that would deepen their understanding
+4. Practical applications or projects
+
+For each recommendation, provide:
+- A specific topic/title to search for
+- An emoji icon that represents it
+- A brief reason why it's recommended (1-2 sentences)
+- The type: "deep-dive", "related", "practical", or "foundation"
+
+Respond in this exact JSON format:
+{
+  "recommendations": [
+    {
+      "title": "Topic to search for",
+      "icon": "🎯",
+      "reason": "Why this is recommended based on their interests",
+      "type": "deep-dive"
+    }
+  ]
+}
+
+Only respond with valid JSON, no other text.`;
+
+  const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${state.apiKey}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      contents: [{
+        parts: [{ text: prompt }]
+      }],
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 1024,
+      }
+    })
+  });
+  
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error?.message || 'API request failed');
+  }
+  
+  const data = await response.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  
+  // Parse JSON from response
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error('Invalid response format');
+  }
+  
+  const parsed = JSON.parse(jsonMatch[0]);
+  return parsed.recommendations || [];
+}
+
+function renderRecommendations(recommendations) {
+  elements.recsList.innerHTML = recommendations.map(rec => `
+    <div class="rec-card">
+      <div class="rec-card-header">
+        <div class="rec-icon">${rec.icon}</div>
+        <div class="rec-title">
+          ${escapeHtml(rec.title)}
+          <span class="rec-type-badge">${rec.type}</span>
+        </div>
+      </div>
+      <div class="rec-reason">${escapeHtml(rec.reason)}</div>
+      <a href="https://www.youtube.com/results?search_query=${encodeURIComponent(rec.title)}" 
+         target="_blank" 
+         class="rec-search-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="11" cy="11" r="8"/>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        Search on YouTube
+      </a>
+    </div>
+  `).join('');
 }
